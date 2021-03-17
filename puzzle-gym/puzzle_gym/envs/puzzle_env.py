@@ -10,7 +10,7 @@ CHANNEL_NUM = 1
 class PuzzleEnv(gym.Env):
     metadata = {'render.modes': ['human']}
 
-    def __init__(self, img_path=None, img_size=(100, 100), puzzle_size=(2, 2), penalty_for_step=-0.1, reward_for_completiton=1, positive_reward_coefficient=1.0):
+    def __init__(self, img_path=None, img_size=(100, 100), puzzle_size=(2, 2), dist_type="manhattan", penalty_for_step=-0.1, reward_for_completiton=1, positive_reward_coefficient=1.0):
 
         self.puzzle_size = puzzle_size
         self.img_path = img_path
@@ -25,13 +25,15 @@ class PuzzleEnv(gym.Env):
                                             + self.puzzle_size[1] * (self.puzzle_size[0] - 1))
 
         self.observation_space = spaces.Box(low=0, high=255, shape=(
-            self.puzzle_size[0], self.puzzle_size[1], self.tile_size, self.tile_size, CHANNEL_NUM), dtype=np.uint8)
+            CHANNEL_NUM, self.img_size[0], self.img_size[1]), dtype=np.uint8)
 
+        self.dist_type = dist_type
         self.penalty_for_step = penalty_for_step
         self.reward_for_completiton = reward_for_completiton
         self.positive_reward_coefficient = positive_reward_coefficient
 
         self.reset()
+        self.seed()
 
     def step(self, action):
         self.last_reward = self.penalty_for_step
@@ -69,29 +71,40 @@ class PuzzleEnv(gym.Env):
         return self._get_observation_from_puzzle()
 
     def render(self, mode='human'):
-        for i in range(self.puzzle_size[0]):
-            for j in range(self.puzzle_size[1]):
-                idx = i * self.puzzle_size[1] + j
-                print('{0:2d}'.format(
-                    self.puzzle[idx].correct_idx), end="  ")
-            print('\n', end="")
-        # for i in range(self.puzzle_size[0]):
-        #     for j in range(self.puzzle_size[1]*self.tile_size):
-        #         idx = i * self.puzzle_size[1] + j % self.puzzle_size[1]
-        #         k = j // self.puzzle_size[1]
-        #         for m in range(self.tile_size):
-        #             print('{0:2d}'.format(
-        #                 self.puzzle[idx].tile[k][m][0]), end="  ")
-        #         if j % self.puzzle_size[1] == self.puzzle_size[1] - 1:
-        #             print('\n', end="")
-        #         else:
-        #             print('\t', end="")
-        #     print('\n', end="")
+
+        if mode == "human":
+            for i in range(self.puzzle_size[0]):
+                for j in range(self.puzzle_size[1]):
+                    idx = i * self.puzzle_size[1] + j
+                    print('{0:2d}'.format(
+                        self.puzzle[idx].correct_idx), end="  ")
+                print('\n', end="")
+        else:
+            for i in range(self.puzzle_size[0]):
+                for j in range(self.puzzle_size[1]*self.tile_size):
+                    idx = i * self.puzzle_size[1] + j % self.puzzle_size[1]
+                    k = j // self.puzzle_size[1]
+                    for m in range(self.tile_size):
+                        print('{0:2f}'.format(
+                            self.puzzle[idx].tile[k][m][0]), end="  ")
+                    if j % self.puzzle_size[1] == self.puzzle_size[1] - 1:
+                        print('\n', end="")
+                    else:
+                        print('\t', end="")
+                print('\n', end="")
+
+    def seed(self, seed=None):
+        self.np_random, seed = seeding.np_random(seed)
+        return [seed]
 
     def _init_puzzle(self):
         if not self.img_path:
-            puzzle = np.arange(self.tile_size**2 * prod(self.puzzle_size)).repeat(
+            max_num = self.tile_size**2 * prod(self.puzzle_size)
+
+            puzzle = np.arange(max_num).repeat(
                 CHANNEL_NUM).reshape(self.img_size[0], self.img_size[1], CHANNEL_NUM)
+
+            puzzle = 255 * puzzle / max_num
 
             puzzle = np.array(np.hsplit(puzzle, self.puzzle_size[1]))
             puzzle = np.array(np.hsplit(puzzle, self.puzzle_size[0]))
@@ -126,12 +139,23 @@ class PuzzleEnv(gym.Env):
     def _calculate_reward(self, idx1, idx2):
         res = 0
         for i in [idx1, idx2]:
-            correct_coord = (
-                self.puzzle[i].correct_idx // self.puzzle_size[1], self.puzzle[i].correct_idx % self.puzzle_size[1])
-            current_coord = (
-                i // self.puzzle_size[1], i % self.puzzle_size[1])
-            distance = self._calculate_point_dist(correct_coord, current_coord)
-            res += distance
+            if self.dist_type == "manhattan":
+                correct_coord = (
+                    self.puzzle[i].correct_idx // self.puzzle_size[1], self.puzzle[i].correct_idx % self.puzzle_size[1])
+                current_coord = (
+                    i // self.puzzle_size[1], i % self.puzzle_size[1])
+                distance = abs(
+                    correct_coord[0] - current_coord[0]) + abs(correct_coord[1] - current_coord[1])
+                res += distance / 2
+
+            else:
+                correct_coord = (
+                    self.puzzle[i].correct_idx // self.puzzle_size[1], self.puzzle[i].correct_idx % self.puzzle_size[1])
+                current_coord = (
+                    i // self.puzzle_size[1], i % self.puzzle_size[1])
+                distance = self._calculate_point_dist(
+                    correct_coord, current_coord)
+                res += distance
 
         return res
 
@@ -141,14 +165,15 @@ class PuzzleEnv(gym.Env):
 
     def _get_observation_from_puzzle(self):
         observation = np.zeros(shape=(
-            self.puzzle_size[0], self.puzzle_size[1], self.tile_size, self.tile_size, CHANNEL_NUM))
+            self.img_size[0], self.img_size[1], CHANNEL_NUM))
 
         for idx, puzzle in enumerate(self.puzzle):
             j = idx % self.puzzle_size[1]
             i = idx // self.puzzle_size[1]
-            observation[i, j] = puzzle.tile
+            observation[i * self.tile_size: (i+1) * self.tile_size, j * self.tile_size: (
+                j + 1) * self.tile_size] = puzzle.tile
 
-        return observation
+        return np.moveaxis(observation, -1, 0)
 
 
 class Tile:
@@ -159,5 +184,3 @@ class Tile:
 
     def set_current_idx(self, idx):
         self.current_idx = idx
-
-

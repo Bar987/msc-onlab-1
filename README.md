@@ -18,3 +18,9 @@ python3 ./puzzle_model/train.py
 ```
 python3 poc.py
 ```
+
+### Egy 3x3-as példa az action space-re
+
+A tile-ok közötti szám, mint input, a két szomszédos tile cseréjét eredményezi.
+
+![alt text](./figs/env2.png "3x3") 

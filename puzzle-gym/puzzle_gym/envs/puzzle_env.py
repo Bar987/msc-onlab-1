@@ -1,29 +1,59 @@
 import gym
 from gym import error, spaces, utils
 from gym.utils import seeding
+from PIL import Image
 import numpy as np
+import glob
 from math import prod, sqrt
 
 CHANNEL_NUM = 1
 
 
 class PuzzleEnv(gym.Env):
+
     metadata = {'render.modes': ['human']}
 
-    def __init__(self, img_path=None, img_size=(100, 100), puzzle_size=(2, 2), dist_type="manhattan", penalty_for_step=-0.1, reward_for_completiton=1, positive_reward_coefficient=1.0):
+    def __init__(self, img_dir=None, img_size=(100, 100), puzzle_size=(3, 3), puzzle_type="slide", dist_type="manhattan", penalty_for_step=-0.1, reward_for_completiton=1, positive_reward_coefficient=1.0):
 
         self.puzzle_size = puzzle_size
-        self.img_path = img_path
 
-        self.tile_size = max(
+        self.tile_size = min(
             img_size[0] // puzzle_size[0], img_size[1] // puzzle_size[1])
 
+        self.puzzle_type = puzzle_type
+
+        '''
+        A kép méretét a csempék számának és a csempék szélességének szorzatára változtatjuk.
+        '''
         self.img_size = (
             self.puzzle_size[0] * self.tile_size, self.puzzle_size[1] * self.tile_size)
 
-        self.action_space = spaces.Discrete(self.puzzle_size[0] * (self.puzzle_size[1] - 1)
-                                            + self.puzzle_size[1] * (self.puzzle_size[0] - 1))
+        if img_dir:
+            images = []
+            for f in glob.iglob(img_dir + "/*"):
+                if CHANNEL_NUM == 1:
+                    images.append(np.asarray(Image.open(f).resize(self.img_size)).reshape(
+                        (self.img_size[0], self.img_size[1], CHANNEL_NUM)))
+                else:
+                    images.append(np.asarray(Image.open(f).resize(self.img_size))[..., :CHANNEL_NUM].reshape(
+                        (self.img_size[0], self.img_size[1], CHANNEL_NUM)))
+            self.images = np.array(images)
 
+        if self.puzzle_type == "slide":
+            '''
+            Az action space 4 diszkrét akcióból áll (balra, fel, jobbra, le)
+            '''
+            self.action_space = spaces.Discrete(4)
+        else:
+            '''
+            Az action space a csempék sorainak számainak és az oszlopok száma -1 -nek a szorzata,
+            plusz az oszlopok és a sorok száma -1 szorzata.
+            '''
+            self.action_space = spaces.Discrete(self.puzzle_size[0] * (self.puzzle_size[1] - 1)
+                                                + self.puzzle_size[1] * (self.puzzle_size[0] - 1))
+        '''
+        Az observation space a puzzle által aktuálisan ábrázolt kép.
+        '''
         self.observation_space = spaces.Box(low=0, high=255, shape=(
             CHANNEL_NUM, self.img_size[0], self.img_size[1]), dtype=np.uint8)
 
@@ -38,15 +68,24 @@ class PuzzleEnv(gym.Env):
     def step(self, action):
         self.last_reward = self.penalty_for_step
 
-        temp = self.puzzle_size[0] * (self.puzzle_size[0]-1)
-        if action < temp:
-            divident = action // (self.puzzle_size[1]-1)
-            stride = action % (self.puzzle_size[1]-1)
-            idx = divident * self.puzzle_size[1] + stride
-            reward = self._swap_elements(idx, idx + 1)
+        if self.puzzle_type == "slide":
+            reward = self._swap_elements([action])
         else:
-            idx = action % temp
-            reward = self._swap_elements(idx, idx + self.puzzle_size[1])
+            temp = self.puzzle_size[0] * (self.puzzle_size[1]-1)
+            if action < temp:
+                '''
+                Oszlopok között cserélünk.
+                '''
+                divident = action // (self.puzzle_size[1]-1)
+                stride = action % (self.puzzle_size[1]-1)
+                idx = divident * self.puzzle_size[1] + stride
+                reward = self._swap_elements([idx, idx + 1])
+            else:
+                '''
+                Sorok között cserélünk.
+                '''
+                idx = action % temp
+                reward = self._swap_elements([idx, idx + self.puzzle_size[1]])
 
         if reward > 0:
             reward = self.positive_reward_coefficient * reward
@@ -66,6 +105,11 @@ class PuzzleEnv(gym.Env):
         return observation, self.last_reward, done, info
 
     def reset(self):
+        try:
+            self.image = np.random.default_rng().choice(
+                self.images, replace=False, shuffle=False)
+        except NameError:
+            pass
         self._init_puzzle()
         self.last_reward = 0
         return self._get_observation_from_puzzle()
@@ -98,7 +142,9 @@ class PuzzleEnv(gym.Env):
         return [seed]
 
     def _init_puzzle(self):
-        if not self.img_path:
+        try:
+            puzzle = self.image
+        except NameError:
             max_num = self.tile_size**2 * prod(self.puzzle_size)
 
             puzzle = np.arange(max_num).repeat(
@@ -106,8 +152,11 @@ class PuzzleEnv(gym.Env):
 
             puzzle = 255 * puzzle / max_num
 
-            puzzle = np.array(np.hsplit(puzzle, self.puzzle_size[1]))
-            puzzle = np.array(np.hsplit(puzzle, self.puzzle_size[0]))
+        '''
+        Megfelelő számú darabra vágjuk a képet.
+        '''
+        puzzle = np.array(np.hsplit(puzzle, self.puzzle_size[1]))
+        puzzle = np.array(np.hsplit(puzzle, self.puzzle_size[0]))
 
         self.puzzle = []
 
@@ -116,19 +165,106 @@ class PuzzleEnv(gym.Env):
                 idx = i * self.puzzle_size[1] + j
                 self.puzzle.append(Tile(tile, idx, idx))
 
-        np.random.shuffle(self.puzzle)
+        '''
+        Ha tologatós puzzle-ről van szó, akkor az utolsó csempét kinullázzuk.
+        '''
+        if self.puzzle_type == "slide":
+            idx = self.puzzle_size[0] * self.puzzle_size[1] - 1
+            self.puzzle[-1] = Tile(np.zeros(shape=(self.tile_size,
+                                                   self.tile_size, CHANNEL_NUM), dtype=np.uint8), idx, idx)
+            self._shuffle_puzzle()
+        else:
+            np.random.shuffle(self.puzzle)
 
         for i, tile in enumerate(self.puzzle):
             tile.set_current_idx(i)
 
-    def _swap_elements(self, idx1, idx2):
-        score_before = self._calculate_reward(idx1, idx2)
-        temp = self.puzzle[idx1]
-        self.puzzle[idx1] = self.puzzle[idx2]
-        self.puzzle[idx2] = temp
-        score_after = self._calculate_reward(idx1, idx2)
+    '''
+    Megkeveri a tologatós puzzle-t, ha nem megoldható permutációt kap, akkor a 0 és 1 correct_idx-ű
+    csempét megcseréli, ezzel a permutáció paritását megváltoztatva.
+    '''
 
+    def _shuffle_puzzle(self):
+        np.random.shuffle(self.puzzle)
+        for i, tile in enumerate(self.puzzle):
+            tile.set_current_idx(i)
+        if not self._check_if_solvable():
+            zero_indexed = [
+                tile for tile in self.puzzle if tile.correct_idx == 0][0]
+            one_indexed = [
+                tile for tile in self.puzzle if tile.correct_idx == 1][0]
+            self.puzzle[zero_indexed.current_idx] = one_indexed
+            self.puzzle[one_indexed.current_idx] = zero_indexed
+
+    '''
+    Csak azok a permutációk megoldhatóak, ahol az adott correct_idx-ű tile "előtti" (bal-fentről nézve)
+    nagyobb correct_idx-ű tile-ok száma minden csempére összegezve páros.
+    '''
+
+    def _check_if_solvable(self):
+        parity = 0
+
+        for i, tile in enumerate(self.puzzle):
+            for prev_tile in self.puzzle[:i]:
+                if prev_tile.correct_idx > tile.correct_idx:
+                    parity += 1
+
+        return parity % 2 == 0
+
+    '''
+    Az akció következtében megtörténő csempecserét implementálja.
+    '''
+
+    def _swap_elements(self, action):
+
+        if len(action) == 1:
+            idx = self.puzzle_size[0] * self.puzzle_size[1] - 1
+            space = [
+                tile for tile in self.puzzle if tile.correct_idx == idx][0]
+            action = [space.current_idx, self._map_action_to_index(
+                action[0], space.current_idx)]
+
+        score_before = self._calculate_reward(action[0], action[1])
+        temp = self.puzzle[action[0]]
+        self.puzzle[action[0]] = self.puzzle[action[1]]
+        self.puzzle[action[1]] = temp
+
+        for i, tile in enumerate(self.puzzle):
+            tile.set_current_idx(i)
+
+        score_after = self._calculate_reward(action[1], action[0])
         return score_before - score_after
+
+    '''
+    A különböző akciók függvényében vissazadja a befolyásolt csempe indexét.
+    0: Az üres helyre jobbról érkezik csempe.
+    1: Az üres helyre lentről érkezik csempe.
+    2: Az üres helyre balról érkezik csempe.
+    3: Az üres helyre fentről érkezik csempe.
+    '''
+
+    def _map_action_to_index(self, action, index):
+        max_idx = idx = self.puzzle_size[0] * self.puzzle_size[1] - 1
+        result = index
+
+        if action == 0:
+            result = index if index % self.puzzle_size[1] == self.puzzle_size[1] - \
+                1 else index + 1
+        elif action == 1:
+            result = index if index // self.puzzle_size[1] == self.puzzle_size[0] - 1 else index + \
+                self.puzzle_size[1]
+        elif action == 2:
+            result = index if index % self.puzzle_size[1] == 0 else index - 1
+        elif action == 3:
+            result = index if index // self.puzzle_size[1] == 0 else index - \
+                self.puzzle_size[1]
+        if result > max_idx or result < 0:
+            return index
+        return result
+
+    '''
+    Ellenőrzi, hogy a puzzle megoldásra került-e
+    '''
 
     def _is_done(self):
         for i, tile in enumerate(self.puzzle):
@@ -136,9 +272,19 @@ class PuzzleEnv(gym.Env):
                 return False
         return True
 
+    '''
+    Kiszámolja a jutalmat, manhattan, vagy sima ponttávolság alapján.
+    '''
+
     def _calculate_reward(self, idx1, idx2):
         res = 0
-        for i in [idx1, idx2]:
+
+        if self.puzzle_type == "slide":
+            idx_list = [idx2]
+        else:
+            idx_list = [idx1, idx2]
+
+        for i in idx_list:
             if self.dist_type == "manhattan":
                 correct_coord = (
                     self.puzzle[i].correct_idx // self.puzzle_size[1], self.puzzle[i].correct_idx % self.puzzle_size[1])
@@ -163,6 +309,10 @@ class PuzzleEnv(gym.Env):
         return sqrt(
             ((p1[0]-p2[0])**2)+((p1[1]-p2[1])**2))
 
+    '''
+    A csempéket tartalmazó listát leképezi a csempékből álló képre, amit a modell feldolgoz.
+    '''
+
     def _get_observation_from_puzzle(self):
         observation = np.zeros(shape=(
             self.img_size[0], self.img_size[1], CHANNEL_NUM))
@@ -184,3 +334,10 @@ class Tile:
 
     def set_current_idx(self, idx):
         self.current_idx = idx
+
+
+def unpickle(file):
+    import pickle
+    with open(file, 'rb') as fo:
+        dict = pickle.load(fo, encoding='bytes')
+    return dict

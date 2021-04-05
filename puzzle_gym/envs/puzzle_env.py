@@ -5,15 +5,16 @@ from PIL import Image
 import numpy as np
 import glob
 from math import prod, sqrt
+import matplotlib.pyplot as plt
 
-CHANNEL_NUM = 1
+CHANNEL_NUM = 3
 
 
 class PuzzleEnv(gym.Env):
 
     metadata = {'render.modes': ['human']}
 
-    def __init__(self, img_dir=None, img_size=(100, 100), puzzle_size=(3, 3), puzzle_type="slide", dist_type="manhattan", penalty_for_step=-0.1, reward_for_completiton=1, positive_reward_coefficient=1.0):
+    def __init__(self, images=None, img_size=(100, 100), puzzle_size=(3, 3), puzzle_type="slide", dist_type="manhattan", penalty_for_step=-0.1, reward_for_completiton=1, positive_reward_coefficient=1.0):
 
         self.puzzle_size = puzzle_size
 
@@ -28,16 +29,7 @@ class PuzzleEnv(gym.Env):
         self.img_size = (
             self.puzzle_size[0] * self.tile_size, self.puzzle_size[1] * self.tile_size)
 
-        if img_dir:
-            images = []
-            for f in glob.iglob(img_dir + "/*"):
-                if CHANNEL_NUM == 1:
-                    images.append(np.asarray(Image.open(f).resize(self.img_size)).reshape(
-                        (self.img_size[0], self.img_size[1], CHANNEL_NUM)))
-                else:
-                    images.append(np.asarray(Image.open(f).resize(self.img_size))[..., :CHANNEL_NUM].reshape(
-                        (self.img_size[0], self.img_size[1], CHANNEL_NUM)))
-            self.images = np.array(images)
+        self.images = np.array(images)
 
         if self.puzzle_type == "slide":
             '''
@@ -108,7 +100,7 @@ class PuzzleEnv(gym.Env):
         try:
             self.image = np.random.default_rng().choice(
                 self.images, replace=False, shuffle=False)
-        except NameError:
+        except AttributeError:
             pass
         self._init_puzzle()
         self.last_reward = 0
@@ -144,9 +136,8 @@ class PuzzleEnv(gym.Env):
     def _init_puzzle(self):
         try:
             puzzle = self.image
-        except NameError:
-            max_num = self.tile_size**2 * prod(self.puzzle_size)
-
+        except AttributeError:
+            max_num = prod(self.img_size)
             puzzle = np.arange(max_num).repeat(
                 CHANNEL_NUM).reshape(self.img_size[0], self.img_size[1], CHANNEL_NUM)
 

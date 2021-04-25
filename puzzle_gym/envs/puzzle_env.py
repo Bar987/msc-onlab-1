@@ -1,20 +1,15 @@
 import gym
 from gym import error, spaces, utils
 from gym.utils import seeding
-from PIL import Image
 import numpy as np
-import glob
-from math import prod, sqrt
-import matplotlib.pyplot as plt
-
-CHANNEL_NUM = 3
-
+from math import sqrt
 
 class PuzzleEnv(gym.Env):
 
     metadata = {'render.modes': ['human']}
 
-    def __init__(self, images=None, img_size=(100, 100), puzzle_size=(3, 3), puzzle_type="slide", dist_type="manhattan", penalty_for_step=-0.1, reward_for_completiton=1, positive_reward_coefficient=1.0):
+    def __init__(self, images=None, img_size=(100, 100), channel_num=3, puzzle_size=(3, 3), puzzle_type="slide",  max_step_num=None, dist_type="manhattan", penalty_for_step=-0.1, reward_for_completiton=1, positive_reward_coefficient=1.0,
+                 render_mode="none", obs_conf={"min": 0, "max": 255, "type": np.int8}):
 
         self.puzzle_size = puzzle_size
 
@@ -29,7 +24,14 @@ class PuzzleEnv(gym.Env):
         self.img_size = (
             self.puzzle_size[0] * self.tile_size, self.puzzle_size[1] * self.tile_size)
 
-        self.images = np.array(images)
+        self.channel_num = channel_num
+
+        self.images = images
+
+        if not self.images is None:
+            self.all_indices = np.arange(len(images))
+            np.random.default_rng().shuffle(self.all_indices)
+            self.left_indices = self.all_indices.copy()
 
         if self.puzzle_type == "slide":
             '''
@@ -46,18 +48,25 @@ class PuzzleEnv(gym.Env):
         '''
         Az observation space a puzzle által aktuálisan ábrázolt kép.
         '''
-        self.observation_space = spaces.Box(low=0, high=255, shape=(
-            CHANNEL_NUM, self.img_size[0], self.img_size[1]), dtype=np.uint8)
+        self.observation_space = spaces.Box(low=obs_conf["min"], high=obs_conf["max"], shape=(
+            self.channel_num, self.img_size[0], self.img_size[1]), dtype=obs_conf["type"])
 
         self.dist_type = dist_type
         self.penalty_for_step = penalty_for_step
         self.reward_for_completiton = reward_for_completiton
         self.positive_reward_coefficient = positive_reward_coefficient
 
+        self.max_step_num = max_step_num if max_step_num != None else -1
+        self.step_num = self.max_step_num
+
+        self.render_mode = render_mode
+
         self.reset()
         self.seed()
 
     def step(self, action):
+        self.step_num -= 1
+
         self.last_reward = self.penalty_for_step
 
         if self.puzzle_type == "slide":
@@ -87,10 +96,12 @@ class PuzzleEnv(gym.Env):
         if self._is_done():
             done = True
             self.last_reward += self.reward_for_completiton
+        elif self.step_num == 0:
+            done = True
         else:
             done = False
 
-        self.render()
+        self.render(mode=self.render_mode)
 
         observation = self._get_observation_from_puzzle()
         info = {}
@@ -98,12 +109,23 @@ class PuzzleEnv(gym.Env):
 
     def reset(self):
         try:
-            self.image = np.random.default_rng().choice(
-                self.images, replace=False, shuffle=False)
-        except AttributeError:
+            try:
+                if len(self.left_indices) < 1:
+                    self.left_indices = self.all_indices.copy()
+                    np.random.default_rng().shuffle(self.left_indices)
+
+                next_idx = self.left_indices[-1]
+                self.left_indices = self.left_indices[:-1]
+                self.image = self.images[next_idx]
+            except AttributeError:
+                pass
+
+        except ValueError:
             pass
+
         self._init_puzzle()
         self.last_reward = 0
+        self.step_num = self.max_step_num
         return self._get_observation_from_puzzle()
 
     def render(self, mode='human'):
@@ -115,7 +137,7 @@ class PuzzleEnv(gym.Env):
                     print('{0:2d}'.format(
                         self.puzzle[idx].correct_idx), end="  ")
                 print('\n', end="")
-        else:
+        elif mode=="full":
             for i in range(self.puzzle_size[0]):
                 for j in range(self.puzzle_size[1]*self.tile_size):
                     idx = i * self.puzzle_size[1] + j % self.puzzle_size[1]
@@ -128,6 +150,8 @@ class PuzzleEnv(gym.Env):
                     else:
                         print('\t', end="")
                 print('\n', end="")
+        else:
+            return
 
     def seed(self, seed=None):
         self.np_random, seed = seeding.np_random(seed)
@@ -137,9 +161,9 @@ class PuzzleEnv(gym.Env):
         try:
             puzzle = self.image
         except AttributeError:
-            max_num = prod(self.img_size)
+            max_num = self.img_size[0]*self.img_size[1]
             puzzle = np.arange(max_num).repeat(
-                CHANNEL_NUM).reshape(self.img_size[0], self.img_size[1], CHANNEL_NUM)
+                self.channel_num).reshape(self.img_size[0], self.img_size[1], self.channel_num)
 
             puzzle = 255 * puzzle / max_num
 
@@ -162,7 +186,7 @@ class PuzzleEnv(gym.Env):
         if self.puzzle_type == "slide":
             idx = self.puzzle_size[0] * self.puzzle_size[1] - 1
             self.puzzle[-1] = Tile(np.zeros(shape=(self.tile_size,
-                                                   self.tile_size, CHANNEL_NUM), dtype=np.uint8), idx, idx)
+                                                   self.tile_size, self.channel_num), dtype=np.uint8), idx, idx)
             self._shuffle_puzzle()
         else:
             np.random.shuffle(self.puzzle)
@@ -306,7 +330,7 @@ class PuzzleEnv(gym.Env):
 
     def _get_observation_from_puzzle(self):
         observation = np.zeros(shape=(
-            self.img_size[0], self.img_size[1], CHANNEL_NUM))
+            self.img_size[0], self.img_size[1], self.channel_num))
 
         for idx, puzzle in enumerate(self.puzzle):
             j = idx % self.puzzle_size[1]
@@ -325,10 +349,3 @@ class Tile:
 
     def set_current_idx(self, idx):
         self.current_idx = idx
-
-
-def unpickle(file):
-    import pickle
-    with open(file, 'rb') as fo:
-        dict = pickle.load(fo, encoding='bytes')
-    return dict
